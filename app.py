@@ -7,54 +7,78 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+import streamlit as st
 import os
 
 load_dotenv()
 
-# Load PDF
-loader = PyPDFLoader("StrukturData.pdf")
-pages = loader.load()
+# Setup
+@st.cache_resource
+def setup_chain():
 
-# Chunk
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 500,
-    chunk_overlap = 50
-)
-chunks = splitter.split_documents(pages)
+    # Load PDF
+    loader = PyPDFLoader("StrukturData.pdf")
+    pages = loader.load()
 
-# Embed & Simpan ke Chroma
-embeddings = HuggingFaceEmbeddings(
-    model_name = "all-MiniLM-L6-v2"
-)
-vectorstore = Chroma.from_documents(chunks, embeddings)
+    # Chunk
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size = 500,
+        chunk_overlap = 50
+    )
+    chunks = splitter.split_documents(pages)
 
-# Retrieval + LLM
-llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    api_key=os.getenv("GROK_API_KEY")
-)
+    # Embed & Simpan ke Chroma
+    embeddings = HuggingFaceEmbeddings(
+        model_name = "all-MiniLM-L6-v2"
+    )
+    vectorstore = Chroma.from_documents(chunks, embeddings)
 
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    # Retrieval + LLM
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        api_key=os.getenv("GROQ_API_KEY")
+    )
 
-prompt = PromptTemplate.from_template("""
-Jawab pertanyaan berdasarkan konteks berikut saja.
-Konteks = {context}                                                                            
-Pertanyaan = {question}                                      
-Jawaban:                                     
-""")
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    prompt = PromptTemplate.from_template("""
+    Jawab pertanyaan berdasarkan konteks berikut saja.
+    Konteks = {context}                                                                            
+    Pertanyaan = {question}                                      
+    Jawaban:                                     
+    """)
 
-qa_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
 
-# Tanya
-pertanyaan = "Apa itu Pointer?"
-jawaban = qa_chain.invoke(pertanyaan)
-print(f"Pertanyaan  : {pertanyaan}")
-print(f"Jawaban     : {jawaban}")
+    chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    return chain
+
+#UI
+st.title("Chat with Your Document")
+st.caption("RAG PDF Chatbot. Powered by Groq + LangChain")
+
+chain = setup_chain()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if pertanyaan := st.chat_input("Tanya sesuatu tentang dokumen..."):
+    st.session_state.messages.append({"role": "user", "content": pertanyaan})
+    with st.chat_message("user"):
+        st.markdown(pertanyaan)
+
+    with st.chat_message("assistant"):
+        jawaban = chain.invoke(pertanyaan)
+        st.markdown(jawaban)
+
+    st.session_state.messages.append({"role": "assistant", "content": jawaban})
